@@ -26,7 +26,6 @@ on:
 
 env:
   REPO_URL: https://github.com/istoreos/istoreos
-  # REPO_BRANCH: main
   FEEDS_CONF: feeds.conf
   CONFIG_FILE: .config
   DIY_P1_SH: scripts/diy-part1.sh
@@ -44,18 +43,11 @@ jobs:
     strategy:
       matrix:
         REPO_BRANCH:
-          # - main
-          # - istoreos-22.03
-          # - istoreos-23.05
           - istoreos-24.10
         ARCHITECTURE:
-          # - rk33xx
-          # - rk35xx
-          # - x86
           - x86-alpha
         os:
           - ubuntu-22.04
-
       fail-fast: false
 
     steps:
@@ -85,7 +77,7 @@ jobs:
     - name: 初始化编译环境
       env:
         DEBIAN_FRONTEND: noninteractive
-        RUSTUP_HOME: /mnt/workdir/rustup  # 指定独立 Rust 目录
+        RUSTUP_HOME: /mnt/workdir/rustup
         CARGO_HOME: /mnt/workdir/cargo
       run: |
         echo "------------------------------- 更新并安装依赖 -------------------------------"
@@ -106,9 +98,16 @@ jobs:
         sudo timedatectl set-timezone "$TZ"
         sudo mkdir -p /mnt/workdir
         sudo chown $USER:$GROUPS /mnt/workdir
-        echo "------------------------------- 安装 Rust 工具链------------------------------- "
+        echo "------------------------------- 安装 Rust 工具链并配置LLVM --------------------------------"
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
         source $CARGO_HOME/env
+        # 配置Rust编译选项避免LLVM下载问题
+        mkdir -p /mnt/workdir/openwrt/files/etc
+        cat > /mnt/workdir/openwrt/files/etc/rust-config.toml <<EOF
+        change-id = 127866
+        [llvm]
+        download-ci-llvm = false
+        EOF
 
     - name: 克隆源码
       working-directory: /mnt/workdir
@@ -121,7 +120,7 @@ jobs:
       uses: klever1988/cachewrtbuild@main
       with:
         ccache: 'true'
-        mixkey: ${{ matrix.os }}-${{ matrix.ARCHITECTURE }}-${{ matrix.REPO_BRANCH }}-rustfix  # 增加标识
+        mixkey: ${{ matrix.os }}-${{ matrix.ARCHITECTURE }}-${{ matrix.REPO_BRANCH }}-rustfix
         prefix: ${{ github.workspace }}/openwrt
 
     - name: 加载自定义 feeds
@@ -153,7 +152,6 @@ jobs:
       run: |
         cd openwrt
         SET_IP=${{ github.event.inputs.lan_ip }}
-        #修改默认IP地址
         sed -i "s/192\.168\.[0-9]*\.[0-9]*/$SET_IP/g" package/base-files/files/bin/config_generate
         echo "Set LAN IP Address: $SET_IP"
 
@@ -191,6 +189,11 @@ jobs:
       run: |
         cd openwrt
         echo -e "$(nproc) thread compile"
+        # 应用Rust配置修复
+        if [ -f ../files/etc/rust-config.toml ]; then
+          cp ../files/etc/rust-config.toml .config
+          echo "Applied Rust LLVM workaround configuration"
+        fi
         make -j$(nproc) || make -j1 || make -j1 V=s
         echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
         echo "::set-output name=status::success"
